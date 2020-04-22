@@ -47,9 +47,10 @@ gatherCredibleSets <- function(path, save = T, respath = NULL){
           for (L in seq(1, length(crediblesets$cs))){
             i = crediblesets$cs[[L]] 
             pip = fres[[cl]][[trans_lead]]$pip[i]
+            zscore = fres[[cl]][[trans_lead]]$z[i]
             snps = names(fres[[cl]][[trans_lead]]$X_column_scale_factors)[i]
-            z = data.frame(cbind(i, pip, snps))
-            colnames(z) = c("position", "PIP", "snp_id")
+            z = data.frame(cbind(i, pip, zscore, snps))
+            colnames(z) = c("position", "PIP", "Z-score", "snp_id")
             z$cs = L
             z$trans_lead = trans_lead
             z$cl_id = cl
