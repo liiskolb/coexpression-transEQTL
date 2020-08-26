@@ -20,7 +20,7 @@ for (f in transfiles){
   if(length(setdiff(meta_ids, trans_res$snp))>0){
     print(setdiff(meta_ids, trans_res$snp))
   }
-  # filter out FDR 5%
+  # filter out FDR 5% results
   trans_res_filt = trans_res %>% filter(adj.pval <= 0.05, snp %in% meta_ids) %>% data.frame()
   if (nrow(trans_res_filt)>0){
     trans_res_filt$qtl_group = qtl_group
@@ -47,6 +47,8 @@ res_filt2 = res2 %>% filter(is_trans)
 
 write.table(res_filt2, file = "/gpfs/hpc/home/liiskolb/transqtl_final/crediblesets/full-meta-trans/filtered_trans_res.tsv", sep = "\t", quote = F)
 
+res_filt2 = read.table("/gpfs/hpc/home/liiskolb/transqtl_final/crediblesets/full-meta-trans/filtered_trans_res.tsv", sep = "\t", stringsAsFactors = F)
+
 ##### Get % of genes in clusters #####
 full_clusters  = list() # genes in clusters
 for(cl in unique(metares$cl_id2)){
@@ -67,6 +69,8 @@ for(cl in unique(metares$cl_id2)){
   }
 }
 saveRDS(full_clusters, "/gpfs/hpc/home/liiskolb/transqtl_final/crediblesets/all_crediblesets/full_clusters.rds")
+
+full_clusters = readRDS("/gpfs/hpc/home/liiskolb/transqtl_final/crediblesets/all_crediblesets/full_clusters.rds")
 
 metalist <- split(as.character(metares$cl_id2), as.character(metares$meta_id))
 all_clusters = list()
@@ -96,10 +100,19 @@ for(i in 1:nrow(metares)){
       print(qtl_group)
       if(!is.null(colnames(d2[[meta_id]]))){
         nr_genes = length(intersect(d2[[meta_id]][,qtl_group], all_clusters[[meta_id]][[cl_id2]]))
+        nr_fdr_genes = length(d2[[meta_id]][,qtl_group])
       }else{
         nr_genes = length(intersect(d2[[meta_id]][[qtl_group]], all_clusters[[meta_id]][[cl_id2]]))
+        nr_fdr_genes = length(d2[[meta_id]][[qtl_group]])
       }
       metares[i,"nr_trans_in_cl"] = nr_genes
+      
+      # add nr of FDR5% trans genes from gene-level analysis
+      metares[i, "nr_gene_trans"] = nr_fdr_genes
+
+      # add cluster size
+      metares[i, "cl_size"] = length(all_clusters[[meta_id]][[cl_id2]])
+      
       # check if snp overlapping gene is in cluster
       pos = as.numeric(strsplit(meta_id, "_")[[1]][2])
       chr = as.numeric(gsub("chr", "", strsplit(meta_id, "_")[[1]][1]))
@@ -136,4 +149,46 @@ length(setdiff(unique(metares$meta_id), unique(metares_filt$meta_id)))
 saveRDS(metares, file = file.path("/gpfs/hpc/home/liiskolb/transqtl_final/crediblesets/all_crediblesets", "all_crediblesets.rsd"))
 write.table(metares, file = "/gpfs/hpc/home/liiskolb/transqtl_final/article_figures/suppl_data/all_crediblesets.tsv", sep = "\t", quote = F)
 
+# additional comparisons after reviews
+metares = read.table("/gpfs/hpc/home/liiskolb/transqtl_final/article_figures/suppl_data/all_crediblesets.tsv", sep = "\t")
+metares_filt = metares %>% filter(nr_trans_in_cl > 0)
+
+# one-sided Fisher’s exact test
+#fisher.test(matrix(c(74, 1000, 844, 16465), nrow = 2), alternative = "greater") ARHGEF3 example
+
+# nr_trans_in_cl = 19. column
+# cl_size = 21. column
+# nr_gene_trans = 20. column
+pvals = apply(metares_filt, 1, 
+      function(x) {
+        tbl <- matrix(c(as.numeric(x[19]), 
+                        as.numeric(x[21])-as.numeric(x[19]), 
+                        as.numeric(x[20])-as.numeric(x[19]), 
+                                   18383-as.numeric(x[21])-(as.numeric(x[20])-as.numeric(x[19]))), nrow = 2)
+        fisher.test(tbl, alternative="greater")$p.value
+      })
+metares_filt$fisher_pval = pvals
+
+p = ggplot(metares_filt %>% select(cl_id2, cl_method, approach, meta_id, fisher_pval, cl_size, nr_gene_trans, nr_trans_in_cl) %>% distinct()) + 
+  geom_histogram(aes(x=fisher_pval), bins = 20) + theme_bw() + facet_grid(cl_method~approach, scales = "free_y") + 
+  xlab("P-value (one-sided Fisher’s exact test)") + ylab("Frequency")
+ggsave(filename = "/gpfs/hpc/home/liiskolb/transqtl_final/article_figures/figures/FigS_fisher.png", p, height = 6)
+
+write.table(metares_filt, file = "/gpfs/hpc/home/liiskolb/transqtl_final/article_figures/suppl_data/filt_crediblesets.tsv", sep = "\t", quote = F)
+metares_filt = read.table(file = "/gpfs/hpc/home/liiskolb/transqtl_final/article_figures/suppl_data/filt_crediblesets.tsv", sep = "\t", stringsAsFactors = F)
+
+# filter with Bonferroni
+adjusted_pvals = metares_filt %>% select(meta_id, cl_id2, fisher_pval) %>% distinct() %>% group_by(meta_id) %>% 
+  mutate(fisher_pval_adj = p.adjust(fisher_pval, method = "bonferroni"))
+
+metares_filt2 = base::merge(metares_filt, adjusted_pvals, by = c("meta_id", "cl_id2", "fisher_pval"), all.x = TRUE, sort = FALSE)
+write.table(metares_filt2, file = "/gpfs/hpc/home/liiskolb/transqtl_final/article_figures/suppl_data/filt_crediblesets.tsv", sep = "\t", quote = F)
+
+#metares_filt3 = metares_filt2 %>% filter(fisher_pval_adj<0.05) # leaves us with 247 meta_ids out of 303
+
+# add the new filter column to the res file
+metares2 = merge(metares, metares_filt2[, c("meta_id", "cl_id2", "snp_id", "trans_lead", "cs_id", "fisher_pval", "fisher_pval_adj")], by = c("meta_id", "cl_id2", "snp_id", "trans_lead", "cs_id"), sort = FALSE, all.x = TRUE, all.y = FALSE)
+
+saveRDS(metares2, file = file.path("/gpfs/hpc/home/liiskolb/transqtl_final/crediblesets/all_crediblesets", "all_crediblesets.rsd"))
+write.table(metares2, file = "/gpfs/hpc/home/liiskolb/transqtl_final/article_figures/suppl_data/all_crediblesets.tsv", sep = "\t", quote = F)
 
